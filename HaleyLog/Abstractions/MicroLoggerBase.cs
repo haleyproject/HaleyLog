@@ -139,8 +139,10 @@ namespace Haley.Abstractions
             }
             try
             {
-                var _msg = formatter.Invoke(state, exception); //Need not pass the exception to Log, as we have already used the formatter to get the message.
-                Log(_msg, null, logLevel, eventId, null);
+                var _msg = formatter.Invoke(state, exception);
+                //ILogger formatters normally render state only. Preserve the exception
+                //as a separate value so file writers can include its type, message and trace.
+                Log(_msg, exception, logLevel, eventId, null);
             }
             catch (Exception ex)
             {

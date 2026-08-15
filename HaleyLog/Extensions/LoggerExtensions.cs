@@ -24,7 +24,6 @@ namespace Haley.Log
         public static ILoggingBuilder AddHaleyFileLogger(this ILoggingBuilder builder,Action<FileLoggerOptions> configure)
         {
             builder.AddHaleyFileLogger(); //set up the base.
-            builder.Services.AddSingleton<ILoggerProvider, FileLogProvider>();
             builder.Services.Configure(configure);
             return builder;
         }

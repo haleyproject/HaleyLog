@@ -21,10 +21,12 @@ namespace Haley.Log
         //One single thread will consume and then write to the files.
         #region ATTRIBUTES
         OutputType _outputType { get; set; }
-        IFileLogWriter _writer { get; set; }
         string _outputDirectory { get; set; }
         string _fileName { get; set; }
-        IProducerConsumerService _producerService; //Each target file will have one single producer consumer service.
+        bool _shouldGenerateEachDay { get; set; }
+        IProducerConsumerService? _producerService; //Each non-rolling target file has one single producer consumer service.
+        ConcurrentDictionary<DateTime, IProducerConsumerService> _dailyProducerServices =
+            new ConcurrentDictionary<DateTime, IProducerConsumerService>();
         #endregion
 
         #region Private Helper Methods
@@ -59,7 +61,13 @@ namespace Haley.Log
         {
             //Don't write directly using the writer. Use a producer/consumer pattern based implementation.
             //Write all log to a collection. Consumer will then consume them and write using the writer.
-            _producerService?.Produce(data);
+            if (data == null) return;
+            var producer = _shouldGenerateEachDay
+                ? _dailyProducerServices.GetOrAdd(
+                    data.TimeStamp.Date,
+                    date => GetOrCreateProducerService(DefineLogWriter(GetTargetFileName(date))))
+                : _producerService;
+            producer?.Produce(data);
         }
 
         #endregion
@@ -117,6 +125,7 @@ namespace Haley.Log
         public FileLogger(string name,FileLoggerOptions options) :base(name ?? "HLogger",options.AllowedLogLevel)
         {
             _outputType = options.Type;
+            _shouldGenerateEachDay = options.ShouldGenerateEachDay;
             if (!ProcessOutputDirectory(options))
             {
                 throw new ArgumentException($@"Unable to process output directory {_outputDirectory}");
@@ -125,38 +134,51 @@ namespace Haley.Log
             _fileName = options.FileName;
             if (string.IsNullOrWhiteSpace(_fileName))
             {
-                _fileName = $@"{AppDomain.CurrentDomain?.FriendlyName ?? "AppLog"}_{DateTime.Now.ToString("yyyy-MM-dd")}"; 
-                //If the filename is not provided by default, generate a file name with the friendlyname of the current domain
+                _fileName = AppDomain.CurrentDomain?.FriendlyName ?? "AppLog";
+                //If the filename is not provided, use the friendly name of the current domain.
             }
 
-            _defineLogWriter(); //initiate the writer which should prepare the file path name.
-
-            //FILE NAME IS THE MOST IMPORTANT KEY.
-            //FOR EACH UNIQUE FILE, DIFFERENT THREADS CAN PRODUCE LOGS TO SINLGE BLOCKING COLLECTION (MAY COME FROM DIFFERENT THREADS).
-            //FOR EACH UNIQUE FILE, USE ONE CONSUMER FOR WRITING (SHOULD BE VIA ONLY ONE THREAD).
-            if (!_targetServices.ContainsKey(_writer.OutputFilePath))
+            if (!_shouldGenerateEachDay)
             {
-                _targetServices.TryAdd(_writer.OutputFilePath, new ProducerConsumerService(_writer));
+                //Preserve the original default naming convention for non-rolling logs.
+                if (string.IsNullOrWhiteSpace(options.FileName))
+                {
+                    _fileName = GetTargetFileName(DateTime.Now.Date, includeDate: true);
+                }
+                _producerService = GetOrCreateProducerService(DefineLogWriter(_fileName));
             }
-            _producerService = _targetServices[_writer.OutputFilePath]; //This item is just a reference to the same static item.
         }
-       
-        private void _defineLogWriter()
+
+        private string GetTargetFileName(DateTime date, bool includeDate = false)
+        {
+            if (!_shouldGenerateEachDay && !includeDate) return _fileName;
+            return $@"{_fileName}_{date:yyyy-MM-dd}";
+        }
+
+        private IProducerConsumerService GetOrCreateProducerService(IFileLogWriter writer)
+        {
+            //FILE NAME IS THE MOST IMPORTANT KEY.
+            //FOR EACH UNIQUE FILE, DIFFERENT THREADS PRODUCE INTO ONE BLOCKING COLLECTION.
+            //FOR EACH UNIQUE FILE, ONE CONSUMER WRITES THE QUEUED ITEMS.
+            return _targetServices.GetOrAdd(
+                writer.OutputFilePath,
+                _ => new ProducerConsumerService(writer));
+        }
+
+        private IFileLogWriter DefineLogWriter(string fileName)
         {
             switch (_outputType)
             {
                 case OutputType.Json:
-                    _writer = new JSONLogWriter(_outputDirectory, _fileName);
-                    break;
+                    return new JSONLogWriter(_outputDirectory, fileName);
                 case OutputType.Xml:
-                    _writer = new XMLLogWriter(_outputDirectory, _fileName);
-                    break;
+                    return new XMLLogWriter(_outputDirectory, fileName);
                 case OutputType.Text_detailed:
-                    _writer = new DetailedTextLogWriter(_outputDirectory, _fileName);
-                    break;
+                    return new DetailedTextLogWriter(_outputDirectory, fileName);
                 case OutputType.Text_simple:
-                    _writer = new SimpleTextWriter(_outputDirectory, _fileName);
-                    break;
+                    return new SimpleTextWriter(_outputDirectory, fileName);
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(_outputType), _outputType, "Unsupported log output type.");
             }
         }
         
